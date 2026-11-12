@@ -1,49 +1,73 @@
-import axios from "axios";
+import { v4 as uuidv4 } from "uuid";
+import { STATIC_TOKEN } from "./crypto.js";
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-const dominio = process.argv[2];
-if (!dominio) { console.error("uso: node headers.js <dominio>"); process.exit(1); }
-
-const base = `https://${dominio}`;
-let html = "";
-try {
-  html = (await axios.get(base + "/", { headers: { "user-agent": UA }, timeout: 20000, responseType: "text", validateStatus: () => true })).data;
-} catch (e) {
-  console.error("falhou abrir a home: " + e.message);
-  process.exit(1);
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
-if (typeof html !== "string" || html.length < 200) { console.error("home vazia"); process.exit(1); }
 
-const srcs = [...html.matchAll(/(?:src|href)="([^"]+\.m?js[^"]*)"/g)]
-  .map((m) => { try { return new URL(m[1], base + "/").href; } catch { return null; } })
-  .filter(Boolean);
-
-let blob = html;
-let baixados = 0;
-for (const s of [...new Set(srcs)].slice(0, 8)) {
-  try {
-    const r = await axios.get(s, { headers: { "user-agent": UA }, timeout: 30000, responseType: "text", validateStatus: () => true });
-    if (typeof r.data === "string") { blob += "\n" + r.data; baixados++; }
-  } catch {}
+function randomStr(len = 64, chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/") {
+  let r = "";
+  for (let i = 0; i < len; i++) r += chars[Math.floor(Math.random() * chars.length)];
+  return r;
 }
-console.log(`bundles: ${baixados} | ${(blob.length / 1024).toFixed(0)}kb\n`);
 
-const PADROES = [
-  /setRequestHeader\(\s*["']([^"']+)["']/g,
-  /headers\s*\[\s*["']([^"']+)["']\s*\]\s*=/g,
-  /["'](authorization|x-[a-z0-9-]{2,30}|auth-token|access-token|token|tenantid)["']\s*:/gi,
+const DEVICES = [
+  { brand: "samsung",  model: "SM-G998B" },
+  { brand: "samsung",  model: "SM-G991B" },
+  { brand: "samsung",  model: "SM-A528B" },
+  { brand: "xiaomi",   model: "Redmi Note 12" },
+  { brand: "motorola", model: "moto g82" },
 ];
 
-const vistos = new Set();
-let total = 0;
-for (const re of PADROES) {
-  for (const m of blob.matchAll(re)) {
-    const ctx = blob.slice(Math.max(0, m.index - 100), m.index + 130).replace(/\s+/g, " ");
-    const chave = m[1] + "|" + ctx.slice(0, 45);
-    if (vistos.has(chave)) continue;
-    vistos.add(chave);
-    console.log(`[${m[1]}] ...${ctx}...\n`);
-    if (++total > 50) process.exit(0);
-  }
+function pickDevice() {
+  return DEVICES[Math.floor(Math.random() * DEVICES.length)];
 }
-if (!total) console.log("nada encontrado");
+
+function flashUA(model) {
+  const av = randInt(11, 14), cv = randInt(120, 136), sv = randInt(1000, 9900), mv = randInt(50, 199);
+  return `Mozilla/5.0 (Linux; Android ${av}; ${model}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${cv}.0.${sv}.${mv} Mobile Safari/537.36 speed/1.1.52`;
+}
+
+export function buildHeaders(domain, siteCode) {
+  const d = pickDevice();
+  const nowup = Date.now();
+  return {
+    "Accept-Encoding": "identity",
+    Accept: "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "content-type": "application/json",
+    "sec-ch-ua": `"Not A;Brand";v="99", "Chromium";v="124"`,
+    "sec-ch-ua-mobile": "?1",
+    "sec-ch-ua-platform": `"Android"`,
+    domain,
+    platformType: 5,
+    Nonce: uuidv4(),
+    siteCode: siteCode ? String(siteCode) : "",
+    "x-custom-referer": `https://${domain}`,
+    Referer: `https://${domain}/`,
+    Origin: `https://${domain}`,
+    appversion: "1.1.97",
+    currency: "BRL",
+    auth: "",
+    physicaldevicemodel: `${d.brand} ${d.model}`,
+    devicemodel: `${d.brand} ${d.model}`,
+    timestamp: Math.floor(nowup / 1000),
+    clientTimeZone: "-3",
+    token: STATIC_TOKEN,
+    newJwt: "",
+    language: "pt",
+    "accept-language": "pt-BR,pt;q=0.9",
+    "user-agent": flashUA(d.model),
+    host: domain,
+    connection: "Keep-Alive",
+    "x-data-mode": "json_cipher",
+    "x-version": "7.1.97",
+    "x-request-id": uuidv4(),
+    sign: randomStr(),
+    "Cache-Control": "no-cache",
+    "x-object-id": JSON.stringify({
+      uid: "", browserLanguage: "pt-BR",
+      init: { device: "", created: nowup, version: nowup - randInt(1e6, 5e6) },
+    }),
+  };
+}

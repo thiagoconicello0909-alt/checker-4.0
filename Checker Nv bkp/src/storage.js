@@ -35,6 +35,7 @@ const DEFAULT_CONFIG = {
   notify: true,
   probeOnRun: false,
   filtro9: true,
+  txtDetalhado: false,
 };
 
 export function loadConfig() {

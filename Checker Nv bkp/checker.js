@@ -34,7 +34,7 @@ async function menuConfig() {
     banner();
     const config = loadConfig();
     console.log(`  threads: ${c.ACCENT2}${config.threads}${c.RESET} ${c.DIM}│${c.RESET} delay: ${c.ACCENT2}${config.delay}ms${c.RESET} ${c.DIM}│${c.RESET} saldo mín.: ${c.ACCENT2}R$${config.minBalance}${c.RESET} ${c.DIM}│${c.RESET} VIP mín.: ${c.ACCENT2}${config.minVip}${c.RESET}`);
-    console.log(`  som: ${config.sound ? c.GREEN + "on" + c.RESET : c.DIM + "off" + c.RESET} ${c.DIM}│${c.RESET} notificação: ${config.notify ? c.GREEN + "on" + c.RESET : c.DIM + "off" + c.RESET} ${c.DIM}│${c.RESET} filtro 9: ${config.filtro9 ? c.GREEN + "on" + c.RESET : c.DIM + "off" + c.RESET}\n`);
+    console.log(`  som: ${config.sound ? c.GREEN + "on" + c.RESET : c.DIM + "off" + c.RESET} ${c.DIM}│${c.RESET} notificação: ${config.notify ? c.GREEN + "on" + c.RESET : c.DIM + "off" + c.RESET} ${c.DIM}│${c.RESET} filtro 9: ${config.filtro9 ? c.GREEN + "on" + c.RESET : c.DIM + "off" + c.RESET} ${c.DIM}│${c.RESET} txt: ${config.txtDetalhado ? c.GREEN + "on" + c.RESET : c.DIM + "off" + c.RESET}\n`);
     const escolha = await menu("Configurações", [
       "Alterar threads",
       "Alterar delay entre requisições (ms)",
@@ -43,6 +43,7 @@ async function menuConfig() {
       "Alternar som",
       "Alternar notificação",
       "Alternar filtro do 3º dígito (9 = celular)",
+      "Alternar arquivos .txt detalhados",
     ]);
     if (escolha === 0) return;
     banner();
@@ -53,6 +54,7 @@ async function menuConfig() {
     else if (escolha === 5) config.sound = !config.sound;
     else if (escolha === 6) config.notify = !config.notify;
     else if (escolha === 7) config.filtro9 = !config.filtro9;
+    else if (escolha === 8) config.txtDetalhado = !config.txtDetalhado;
     saveConfig(config);
   }
 }

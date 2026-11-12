@@ -1,102 +1,157 @@
-import { buildHeaders } from "./headers.js";
-import { tlsPost } from "./tls.js";
+import fs from "fs";
+import path from "path";
+import { ROOT } from "./paths.js";
+import { prompt, c } from "./ui.js";
+import { loadCasas, saveCasas, saveProbe, loadProbe } from "./storage.js";
+import { splitCurls, parseCurl, buildCasa } from "./curl.js";
+import { probe, probePerfil } from "./trpc.js";
 
-/**
- * Verificação profunda — lista de bônus pendentes.
- * Rota de referência: /discount (aba canReceive, filtro "Pendente")
- * Endpoint padrão: POST /api/active/receivedAwardList
- *
- * status: 0 = pendente | timeDay: 60 = últimos 60 dias
- * Retorno: { ok, hit, total, somaTotal, itens[], erro }
- */
+const BONUS_ENDPOINT = "/api/active/receivedAwardList";
+const BONUS_BODY = { page: 1, pageSize: 10, status: 0, timeDay: 60 };
 
-const MAX_ITENS = 10;
-
-const CAMPOS = [
-  "id", "activeId", "ruleId", "template", "activeType", "activeTypeText",
-  "activeName", "bonusEnum", "bonusText", "reward", "status",
-  "logCreateTime", "periodTime", "receiveTimeRemark", "canReceiveTime", "canGo",
-];
-
-const soNumero = (v) => {
-  const n = Number(String(v ?? "").replace(/[^\d.-]/g, ""));
-  return Number.isFinite(n) ? n : 0;
-};
-
-function enxugar(item) {
-  const o = {};
-  for (const k of CAMPOS) if (item?.[k] !== undefined && item?.[k] !== null) o[k] = item[k];
-  return o;
+function nomeDe(dominio) {
+  return String(dominio || "").replace(/^www\./, "").split(".")[0].replace(/[^a-z0-9_-]/gi, "").toLowerCase();
 }
 
-function extrairLista(payload) {
-  const d = payload?.data ?? payload ?? {};
-  const lista = d.list || d.records || d.rows || d.pendingRewardList || [];
-  const total = soNumero(d.total ?? d.count ?? lista.length);
-  const soma = lista.reduce((acc, it) => acc + soNumero(it?.reward), 0);
-  const somaTotal = soNumero(d.totalReward ?? d.totalAmount ?? d.sumReward ?? soma);
-  return { lista: Array.isArray(lista) ? lista : [], total, soma, somaTotal };
+function resumo(casa) {
+  const tags = [];
+  if (casa.loginPath) tags.push("login");
+  if (casa.perfilPath) tags.push("perfil");
+  if (casa.infoPath) tags.push("info");
+  if (casa.deepCheck?.enabled) tags.push("bonus");
+  return tags.join("+") || "-";
 }
 
-export async function verificarBonus({ casa, token, deviceId, traceId }) {
-  const cfg = casa.deepCheck || {};
-  const endpoint = cfg.endpoint;
-  const res = { ok: false, hit: false, total: 0, somaTotal: 0, itens: [], erro: null };
+async function perguntarNome(sugestao) {
+  const nome = (await prompt(`  Nome da casa ${c.DIM}[${sugestao}]${c.RESET}: `)).trim() || sugestao;
+  return nome.replace(/[^a-z0-9_.-]/gi, "_");
+}
 
-  if (!endpoint) {
-    res.erro = "sem endpoint";
-    return res;
+export async function cmdAdd() {
+  console.log(`  ${c.DIM}Cole o curl de login. Enter vazio encerra.${c.RESET}\n`);
+  const linhas = [];
+  while (true) {
+    const l = await prompt("  curl> ");
+    if (!l.trim()) break;
+    linhas.push(l);
   }
-  if (!token) {
-    res.erro = "sem token de sessão";
-    return res;
-  }
+  const blocos = splitCurls(linhas.join("\n"));
+  if (!blocos.length) return console.log(`  ${c.R}Nada colado.${c.RESET}`);
 
-  const body = { ...(cfg.body || {}) };
-  body.page = Number(body.page) || 1;
-  body.pageSize = Math.min(Number(body.pageSize) || MAX_ITENS, MAX_ITENS);
-
-  const host = casa.apiHost || casa.domain;
-  const lang = casa.lang || "pt";
-  const qs = new URLSearchParams({
-    siteCode: String(casa.siteCode || ""),
-    token: String(token),
-    language: lang,
-  });
-
-  const headers = {
-    ...buildHeaders(casa.domain, casa.siteCode || ""),
-    ...(casa.headers || {}),
-    token: String(token),
-    language: lang,
-    "accept-language": lang === "en" ? "en-US,en;q=0.9" : "pt-BR,pt;q=0.9",
-  };
-  if (deviceId) headers["x-device-id"] = deviceId;
-  if (traceId) headers["x-trace-id"] = traceId;
-
-  const raw = JSON.stringify(body);
-  headers["content-length"] = Buffer.byteLength(raw).toString();
-
-  try {
-    const text = await tlsPost(`https://${host}${endpoint}?${qs.toString()}`, headers, raw);
-    const payload = JSON.parse(text || "{}");
-
-    if (Number(payload?.code) !== 1) {
-      res.erro = payload?.msg || `code ${payload?.code}`;
-      return res;
+  const casas = loadCasas();
+  let ok = 0, falhou = 0;
+  for (const bloco of blocos) {
+    const parsed = parseCurl(bloco);
+    if (parsed.error) { console.log(`  ${c.R}x ${parsed.error}${c.RESET}`); falhou++; continue; }
+    const casa = buildCasa(parsed);
+    const nome = await perguntarNome(nomeDe(casa.domain));
+    if (casas[nome]) {
+      const resp = (await prompt(`  '${nome}' ja existe. Sobrescrever? [s/N]: `)).toLowerCase();
+      if (resp !== "s") continue;
     }
-
-    const { lista, total, soma, somaTotal } = extrairLista(payload);
-    res.ok = true;
-    res.total = total;
-    res.somaTotal = somaTotal || soma;
-    res.itens = lista.slice(0, MAX_ITENS).map(enxugar);
-    res.hit = lista.length > 0;
-  } catch (e) {
-    res.erro = e?.response?.status ? `HTTP ${e.response.status}` : (e?.message || "erro");
+    casa.lang = "pt";
+    casa.criadaEm = new Date().toISOString();
+    const bonus = (await prompt(`  Endpoint de bonus [Enter = ${BONUS_ENDPOINT}]: `)).trim();
+    if (bonus !== "-") casa.deepCheck = { enabled: true, endpoint: bonus || BONUS_ENDPOINT, body: { ...BONUS_BODY } };
+    casas[nome] = casa;
+    ok++;
+    console.log(`  ${c.GREEN}ok ${nome} | ${casa.domain} | tenant=${casa.tenantId}${c.RESET}`);
   }
-
-  return res;
+  if (ok) { saveCasas(casas); console.log(`\n  ${c.GREEN}${ok} casa(s) salva(s).${c.RESET}`); }
+  if (falhou) console.log(`  ${c.R}${falhou} curl(s) recusado(s).${c.RESET}`);
 }
 
-export default verificarBonus;
+export function cmdList() {
+  const casas = loadCasas();
+  const nomes = Object.keys(casas);
+  if (!nomes.length) return console.log(`  ${c.DIM}Nenhuma casa cadastrada.${c.RESET}`);
+  console.log();
+  for (const nome of nomes) {
+    const casa = casas[nome];
+    console.log(`  ${c.B}${nome}${c.RESET} | ${casa.domain} | tenant=${casa.tenantId} | ${resumo(casa)} | passMode=${casa.passMode || "plain"}`);
+  }
+  console.log(`\n  ${c.DIM}${nomes.length} casa(s).${c.RESET}`);
+}
+
+export async function cmdDiscover() {
+  const alvo = (await prompt("  Casa (nome): ")).trim();
+  const casas = loadCasas();
+  const casa = casas[alvo];
+  if (!casa) return console.log(`  ${c.R}casa '${alvo}' nao encontrada.${c.RESET}`);
+  console.log(`\n  ${c.DIM}sondando ${casa.domain}...${c.RESET}`);
+  let achados = [], perfil = null;
+  try { achados = await probe(casa); } catch (e) { console.log(`  ${c.R}probe: ${e.message}${c.RESET}`); }
+  try { perfil = await probePerfil(casa); } catch (e) { console.log(`  ${c.R}probe perfil: ${e.message}${c.RESET}`); }
+  const procs = [...new Set([...(achados || []).map((a) => a.path), perfil?.path].filter(Boolean))];
+  if (!procs.length) return console.log(`  ${c.YELLOW}Nada respondeu.${c.RESET}`);
+  for (const p of procs) console.log(`  ${c.GREEN}ok ${p.split("/trpc/")[1] || p}${c.RESET}`);
+  if (perfil?.path) {
+    casa.perfilPath = perfil.path;
+    casa.perfilBody = JSON.stringify(perfil.body || { json: {} });
+  }
+  casa.perfilProcs = [...new Set([...(casa.perfilProcs || []), ...procs.map((p) => p.split("/trpc/")[1] || p)])];
+  casa.descobertoEm = new Date().toISOString();
+  saveCasas(casas);
+  saveProbe(alvo, { quando: casa.descobertoEm, procs, perfil });
+  console.log(`  ${c.GREEN}${procs.length} procedure(s) gravada(s).${c.RESET}`);
+}
+
+export async function cmdLinkPerfil() {
+  const alvo = (await prompt("  Casa (nome): ")).trim();
+  const casas = loadCasas();
+  const casa = casas[alvo];
+  if (!casa) return console.log(`  ${c.R}casa '${alvo}' nao encontrada.${c.RESET}`);
+  const bruto = await prompt("  curl de perfil> ");
+  if (!bruto.trim()) return console.log(`  ${c.DIM}cancelado.${c.RESET}`);
+  const parsed = parseCurl(bruto);
+  if (parsed.error) return console.log(`  ${c.R}x ${parsed.error}${c.RESET}`);
+  casa.perfilPath = parsed.path;
+  casa.perfilBody = parsed.body || '{"json":{}}';
+  casa.headers = { ...(casa.headers || {}), ...parsed.headers };
+  casa.vinculadoEm = new Date().toISOString();
+  const proc = parsed.path.split("/trpc/")[1];
+  if (proc) casa.perfilProcs = [...new Set([...(casa.perfilProcs || []), proc])];
+  saveCasas(casas);
+  console.log(`  ${c.GREEN}perfil vinculado: ${proc || parsed.path}${c.RESET}`);
+}
+
+export async function cmdRemove() {
+  const alvo = (await prompt("  Casa (nome): ")).trim();
+  const casas = loadCasas();
+  if (!casas[alvo]) return console.log(`  ${c.R}casa '${alvo}' nao encontrada.${c.RESET}`);
+  const resp = (await prompt(`  Remover '${alvo}'? [s/N]: `)).toLowerCase();
+  if (resp !== "s") return console.log(`  ${c.DIM}mantida.${c.RESET}`);
+  delete casas[alvo];
+  saveCasas(casas);
+  try {
+    const arquivo = path.join(ROOT, "db", "probe", `${alvo}.json`);
+    if (fs.existsSync(arquivo)) fs.unlinkSync(arquivo);
+  } catch {}
+  console.log(`  ${c.GREEN}'${alvo}' removida.${c.RESET}`);
+}
+
+export async function cmdRemoveAll() {
+  const casas = loadCasas();
+  const nomes = Object.keys(casas);
+  if (!nomes.length) return console.log(`  ${c.DIM}Nada para remover.${c.RESET}`);
+  const resp = (await prompt(`  Excluir TODAS as ${nomes.length} casas? Digite SIM: `)).trim();
+  if (resp !== "SIM") return console.log(`  ${c.DIM}cancelado.${c.RESET}`);
+  saveCasas({});
+  console.log(`  ${c.GREEN}${nomes.length} casa(s) excluida(s).${c.RESET}`);
+}
+
+export async function cmdDeepCheck() {
+  const alvo = (await prompt("  Casa (nome): ")).trim();
+  const casas = loadCasas();
+  const casa = casas[alvo];
+  if (!casa) return console.log(`  ${c.R}casa '${alvo}' nao encontrada.${c.RESET}`);
+  const endpoint = (await prompt(`  Endpoint [${casa.deepCheck?.endpoint || BONUS_ENDPOINT}]: `)).trim();
+  const corpo = (await prompt(`  Body JSON [${JSON.stringify(BONUS_BODY)}]: `)).trim();
+  let body = { ...BONUS_BODY };
+  if (corpo) { try { body = JSON.parse(corpo); } catch { console.log(`  ${c.R}body invalido.${c.RESET}`); } }
+  casa.deepCheck = { enabled: true, endpoint: endpoint || BONUS_ENDPOINT, body };
+  saveCasas(casas);
+  console.log(`  ${c.GREEN}bonus ativo: ${casa.deepCheck.endpoint}${c.RESET}`);
+}
+
+export default { cmdAdd, cmdList, cmdDiscover, cmdLinkPerfil, cmdRemove, cmdRemoveAll, cmdDeepCheck };

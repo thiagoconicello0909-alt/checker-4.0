@@ -1,4 +1,3 @@
-import { buildHeaders } from "./headers.js";
 import { tlsPost } from "./tls.js";
 
 /**
@@ -8,9 +7,13 @@ import { tlsPost } from "./tls.js";
  *
  * status: 0 = pendente | timeDay: 60 = últimos 60 dias
  * Retorno: { ok, hit, total, somaTotal, itens[], erro }
+ * Autossuficiente: não depende de headers.js nem de buildHeaders.
  */
 
 const MAX_ITENS = 10;
+
+const UA =
+  "Mozilla/5.0 (Linux; Android 14; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6822.114 Mobile Safari/537.36";
 
 const CAMPOS = [
   "id", "activeId", "ruleId", "template", "activeType", "activeTypeText",
@@ -22,6 +25,13 @@ const soNumero = (v) => {
   const n = Number(String(v ?? "").replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : 0;
 };
+
+function nonce() {
+  const h = () => Math.floor(Math.random() * 16).toString(16);
+  let s = "";
+  for (let i = 0; i < 32; i++) s += h();
+  return s;
+}
 
 function enxugar(item) {
   const o = {};
@@ -58,6 +68,8 @@ export async function verificarBonus({ casa, token, deviceId, traceId }) {
 
   const host = casa.apiHost || casa.domain;
   const lang = casa.lang || "pt";
+  const origin = `https://${casa.domain}`;
+
   const qs = new URLSearchParams({
     siteCode: String(casa.siteCode || ""),
     token: String(token),
@@ -65,12 +77,30 @@ export async function verificarBonus({ casa, token, deviceId, traceId }) {
   });
 
   const headers = {
-    ...buildHeaders(casa.domain, casa.siteCode || ""),
-    ...(casa.headers || {}),
-    token: String(token),
-    language: lang,
+    Accept: "application/json, text/plain, */*",
+    "Accept-Encoding": "identity",
     "accept-language": lang === "en" ? "en-US,en;q=0.9" : "pt-BR,pt;q=0.9",
+    "Content-Type": "application/json",
+    "content-type": "application/json",
+    "sec-ch-ua": '"Not A;Brand";v="99", "Chromium";v="134"',
+    "sec-ch-ua-mobile": "?1",
+    "sec-ch-ua-platform": '"Android"',
+    domain: casa.domain,
+    platformType: 5,
+    Nonce: nonce(),
+    siteCode: String(casa.siteCode || ""),
+    "x-custom-referer": origin,
+    Referer: `${origin}/`,
+    Origin: origin,
+    appversion: "1.1.97",
+    currency: casa.currency || "BRL",
+    auth: "",
+    token: String(token),
+    newJwt: "",
+    language: lang,
+    "user-agent": casa.userAgent || UA,
   };
+
   if (deviceId) headers["x-device-id"] = deviceId;
   if (traceId) headers["x-trace-id"] = traceId;
 
